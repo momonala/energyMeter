@@ -884,6 +884,9 @@
   document.addEventListener("keydown", (e) => {
     // Ignore if user is typing in an input
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+    // Don't override browser shortcuts (Cmd/Ctrl + key)
+    if (e.metaKey || e.ctrlKey) return;
     
     switch (e.key.toLowerCase()) {
       case "r":
