@@ -6,12 +6,14 @@ from flask import Flask
 from flask import jsonify
 from flask import request
 
+from database import get_avg_daily_energy_usage
 from database import get_readings
 from database import get_stats
 from database import latest_energy_reading
 from database import num_energy_readings_last_hour
 from database import num_total_energy_readings
 from helpers import parse_time_param
+from mqtt import db_worker
 from mqtt import get_mqtt_client
 from mqtt import mqtt_loop
 from scheduler import get_scheduled_jobs
@@ -52,6 +54,15 @@ def api_readings():
     return jsonify(data)
 
 
+@app.get("/api/avg_daily_energy_usage")
+def avg_daily_energy_usage():
+    """
+    Return the average daily energy usage over the last year from cumulative readings.
+    """
+    data = get_readings()
+    return jsonify(get_avg_daily_energy_usage(data))
+
+
 @app.get("/api/latest_reading")
 def api_latest_reading():
     """Return the last reading."""
@@ -84,12 +95,14 @@ def api_stats():
 
 def start_threads():
     """Start the MQTT and schedule threads."""
-    mqtt_thread = threading.Thread(target=mqtt_loop)
-    schedule_thread = threading.Thread(target=schedule_loop)
+    # Start DB worker once
+    worker_thread = threading.Thread(target=db_worker, daemon=True)
+    worker_thread.start()
+    mqtt_thread = threading.Thread(target=mqtt_loop, daemon=True)
+    schedule_thread = threading.Thread(target=schedule_loop, daemon=True)
     mqtt_thread.start()
     schedule_thread.start()
-    # dont join the threads (blocks main thread which flask runs on)
-    logger.info("Initilizaed threads for MQTT and schedule")
+    logger.info("Initialized threads for MQTT and schedule")
 
 
 @app.get("/status")

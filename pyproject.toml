@@ -23,6 +23,9 @@ flask = "3.*"
 schedule = "1.*"
 black = "*"
 isort = "*"
+pandas = "*"
+jupyter = "*"
+notebook = "*"
 
 
 [build-system]

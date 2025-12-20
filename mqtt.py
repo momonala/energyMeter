@@ -1,6 +1,9 @@
 import json
 import logging
+import queue
 import sys
+import threading
+import time
 
 import paho.mqtt.client as mqtt
 
@@ -11,6 +14,23 @@ from values import SERVER_URL
 from values import TOPIC
 
 logger = logging.getLogger(__name__)
+
+# Queue for database writes
+db_queue = queue.Queue()
+
+
+def db_worker():
+    """Single thread consuming DB writes."""
+    while True:
+        payload = db_queue.get()
+        if payload is None:  # sentinel to stop
+            break
+        try:
+            save_energy_reading(tasmota_payload=payload)
+        except Exception:
+            logger.exception("Failed to save reading")
+        finally:
+            db_queue.task_done()
 
 
 def get_mqtt_client():
@@ -42,7 +62,7 @@ def on_message(client, userdata, msg):
         return
 
     if "MT681" in data:
-        save_energy_reading(tasmota_payload=data)
+        db_queue.put(data)  # enqueue DB write
 
 
 def on_disconnect(client, userdata, reason_code, properties):

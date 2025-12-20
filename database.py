@@ -2,9 +2,9 @@ import json
 import logging
 from datetime import datetime
 from datetime import timedelta
-from datetime import timezone
 from functools import lru_cache
 
+import pandas as pd
 import sqlalchemy
 from sqlalchemy import Column
 from sqlalchemy import DateTime
@@ -130,6 +130,7 @@ def log_db_health_check():
     logger.info(f"[log_db_health_check] {num_readings_last_hour=} {num_total_readings=}")
 
 
+@lru_cache(maxsize=1000)
 def get_readings(
     start: datetime | None = datetime.now(local_timezone()) - timedelta(weeks=1),
     end: datetime | None = datetime.now(local_timezone()),
@@ -166,6 +167,32 @@ def get_readings(
             }
         )
     return result
+
+
+def get_avg_daily_energy_usage(readings_data: list[dict]) -> float:
+    """Return the average daily energy usage over the last year from cumulative readings."""
+
+    df = pd.DataFrame(readings_data)
+    df["t"] = pd.to_datetime(df["t"], unit="ms")
+    df.columns = ["time", "power", "energy"]
+    df = df.sort_values("time")
+
+    last_timestamp = df["time"].max()
+    one_year_ago = last_timestamp - pd.Timedelta(days=365)
+
+    last_year_data = df[df["time"] >= one_year_ago]
+
+    if len(last_year_data) < 2:
+        raise ValueError("Not enough data in the last year")
+
+    energy_start = last_year_data["energy"].iloc[0]
+    energy_end = last_year_data["energy"].iloc[-1]
+
+    days_span = (last_year_data["time"].iloc[-1] - last_year_data["time"].iloc[0]).total_seconds() / 86400
+    if days_span <= 0:
+        raise ValueError("Invalid time span")
+
+    return (energy_end - energy_start) / days_span
 
 
 def get_stats(start: datetime, end: datetime) -> dict:

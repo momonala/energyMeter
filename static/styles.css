@@ -15,6 +15,9 @@
   --color-accent: #00ff51;
   --color-energy: rgb(235, 133, 37);
   --color-power: rgba(37, 99, 235, 1);
+  --color-avg: rgb(168, 85, 247);
+  --color-avg-light: rgb(216, 180, 254);
+  --color-rolling-avg: rgb(96, 165, 250);
   --color-border: rgba(255, 255, 255, 0.06);
   --color-border-hover: rgba(255, 255, 255, 0.22);
 
@@ -178,7 +181,7 @@ body {
   position: absolute;
   top: var(--space-sm);
   left: 130px;
-  background: rgba(17, 24, 39, 0.85);
+  background: rgba(17, 24, 39, 0.92);
   border: 1px solid var(--color-border);
   border-radius: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
@@ -188,6 +191,7 @@ body {
   backdrop-filter: blur(6px);
   pointer-events: none;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .hover-row {
@@ -196,6 +200,19 @@ body {
   column-gap: var(--space-sm);
   align-items: baseline;
   line-height: 1.6;
+}
+
+.hover-row-new {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--space-md);
+  align-items: baseline;
+  line-height: 1.8;
+}
+
+.hover-label {
+  font-weight: 600;
+  min-width: 140px;
 }
 
 /* Toolbar - anchored to bottom */
@@ -280,6 +297,11 @@ body {
   padding: var(--space-md);
 }
 
+/* Reduce padding for period stats to prevent overflow */
+.period-stat {
+  padding: var(--space-sm) var(--space-md);
+}
+
 .stat .label {
   font-size: 10px;
   color: var(--color-muted);
@@ -297,6 +319,40 @@ body {
   line-height: 1.4;
 }
 
+/* Period stat 3-column layout */
+.period-stat .value {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  white-space: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.period-row {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  gap: var(--space-sm);
+  align-items: baseline;
+  font-size: clamp(11px, 1.3vw, 14px);
+}
+
+.period-header {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+  opacity: 0.8;
+}
+
+.period-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  min-width: 30px;
+}
+
 /* Input within stat card */
 .stat input {
   width: 100%;
@@ -312,6 +368,9 @@ body {
 /* Color utilities for stat values */
 .text-energy { color: var(--color-energy); }
 .text-power { color: var(--color-power); }
+.text-avg { color: var(--color-avg); }
+.text-avg-light { color: var(--color-avg-light); }
+.text-rolling-avg { color: var(--color-rolling-avg); }
 
 /* --------------------------------------------------------------------------
    8. uPlot Overrides

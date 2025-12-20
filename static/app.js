@@ -21,6 +21,8 @@
   const hoverTime = document.getElementById("hover-time");
   const hoverTotalEnergy = document.getElementById("hover-total-energy");
   const hoverPower = document.getElementById("hover-power");
+  const hoverAvgTrend = document.getElementById("hover-avg-trend");
+  const hoverRollingAvg = document.getElementById("hover-rolling-avg");
   // Secondary summary elements
   const statCurrentConsumption = document.getElementById("stat-current-consumption");
   const statCostRange = document.getElementById("stat-cost-range");
@@ -31,12 +33,22 @@
   const statWeekCost = document.getElementById("stat-week-cost");
   const statDayEnergy = document.getElementById("stat-day-energy");
   const statDayCost = document.getElementById("stat-day-cost");
+  const statAvgEnergy = document.getElementById("stat-avg-energy");
+  const statAvgCost = document.getElementById("stat-avg-cost");
+  const statMonthAvgEnergy = document.getElementById("stat-month-avg-energy");
+  const statMonthAvgCost = document.getElementById("stat-month-avg-cost");
+  const statWeekAvgEnergy = document.getElementById("stat-week-avg-energy");
+  const statWeekAvgCost = document.getElementById("stat-week-avg-cost");
+  const statDayAvgEnergy = document.getElementById("stat-day-avg-energy");
+  const statDayAvgCost = document.getElementById("stat-day-avg-cost");
 
   // All stat elements for skeleton loading
   const statElements = [
     statEnergy, statAvg, statMax, statMin, statCount, statRange, statCostRange,
     statCurrentConsumption, statTotalCost, statMonthEnergy, statMonthCost,
-    statWeekEnergy, statWeekCost, statDayEnergy, statDayCost
+    statWeekEnergy, statWeekCost, statDayEnergy, statDayCost, statAvgEnergy, statAvgCost,
+    statMonthAvgEnergy, statMonthAvgCost, statWeekAvgEnergy, statWeekAvgCost,
+    statDayAvgEnergy, statDayAvgCost
   ].filter(Boolean);
   const statusLive = document.getElementById("status-live");
 
@@ -44,7 +56,11 @@
   let xVals = [];
   let yVals = [];
   let eVals = [];
+  let avgVals = []; // Historical average trendline values
+  let rollingAvgVals = []; // Rolling 2-day average of power
   let costPerKwh = 0.3102;
+  let avgDailyEnergyUsage = null; // kWh per day from historical data
+  let powerScaleMode = 'auto'; // 'auto' or 'fixed' - controls power Y-axis scaling
 
   let selection = { start: null, end: null };
   const pointerSelect = {
@@ -82,15 +98,17 @@
   /**
    * Downsample data using LTTB algorithm to preserve peaks while reducing point count.
    * This prevents rendering performance issues with millions of data points.
+   * Also downsamples the corresponding eVals (energy values) to keep arrays aligned.
    */
-  function downsampleLTTB(xVals, yVals, threshold = MAX_CHART_POINTS) {
+  function downsampleLTTB(xVals, yVals, eVals, threshold = MAX_CHART_POINTS) {
     if (xVals.length <= threshold) {
-      return { xVals, yVals };
+      return { xVals, yVals, eVals };
     }
     
     const bucketSize = (xVals.length - 2) / (threshold - 2);
     const downsampled_x = [xVals[0]];
     const downsampled_y = [yVals[0]];
+    const downsampled_e = [eVals[0]];
     
     let avgRangeStart = Math.floor(bucketSize) + 1;
     
@@ -142,6 +160,7 @@
       if (maxAreaIdx !== -1) {
         downsampled_x.push(xVals[maxAreaIdx]);
         downsampled_y.push(yVals[maxAreaIdx]);
+        downsampled_e.push(eVals[maxAreaIdx]);
       }
       
       avgRangeStart = avgRangeEnd;
@@ -149,8 +168,9 @@
     
     downsampled_x.push(xVals[xVals.length - 1]);
     downsampled_y.push(yVals[yVals.length - 1]);
+    downsampled_e.push(eVals[eVals.length - 1]);
     
-    return { xVals: downsampled_x, yVals: downsampled_y };
+    return { xVals: downsampled_x, yVals: downsampled_y, eVals: downsampled_e };
   }
 
   // --------------------------------------------------------------------------
@@ -233,7 +253,10 @@
       height,
       scales: {
         x: { time: true },
-        y: { auto: true },     // power (W)
+        y: { 
+          auto: powerScaleMode === 'auto',
+          range: powerScaleMode === 'fixed' ? [0, 2000] : undefined
+        },     // power (W)
         y2: { auto: true },    // energy (kWh)
       },
       axes: [
@@ -268,11 +291,24 @@
           scale: "y",
         },
         {
+          label: "Power EMA",
+          stroke: "rgb(96, 165, 250)",
+          width: 1.5,
+          scale: "y",
+        },
+        {
           label: "Energy",
           stroke: "rgb(235, 133, 37)",
           width: 1.5,
           scale: "y2",
           
+        },
+        {
+          label: "Avg Trend",
+          stroke: "rgb(168, 85, 247)",
+          width: 2,
+          scale: "y2",
+          dash: [0], // Solid line
         },
       ],
       legend: { show: false },
@@ -309,7 +345,7 @@
         ],
       },
     };
-    u = new uPlot(opts, [xVals, yVals, eVals], chartEl);
+    u = new uPlot(opts, [xVals, yVals, rollingAvgVals, eVals, avgVals], chartEl);
     if (u && u.over) {
       const over = u.over;
       over.addEventListener("pointerdown", handlePointerSelectStart);
@@ -358,7 +394,14 @@
     if (endMs <= startMs) return;
     selection = { start: startMs, end: endMs };
     clearPointerSelectionOverlay();
+    
+    // Recalculate the average trendline to start from the selection's start point
+    calculateAvgTrendline(startMs, endMs);
+    
     if (u) {
+      // Update chart data with new trendline
+      u.setData([xVals, yVals, rollingAvgVals, eVals, avgVals]);
+      // Set scale AFTER setData to preserve the zoom
       u.setScale("x", { min: startMs / 1000, max: endMs / 1000 });
     }
     updateLiveIndicator(); // Update immediately when view changes
@@ -380,6 +423,103 @@
     updateLiveIndicator();
   }
 
+  /**
+   * Calculate Exponential Moving Average (EMA) of power values.
+   * EMA gives more weight to recent values while smoothing out noise.
+   * The smoothing factor is chosen to approximate a 2-day response time.
+   */
+  function calculateRollingAvg() {
+    if (xVals.length === 0 || yVals.length === 0) {
+      rollingAvgVals = [];
+      return;
+    }
+    
+    // Smoothing factor: lower = smoother (more history), higher = more responsive
+    // alpha ≈ 2/(N+1) where N is the equivalent window size
+    // With 10-second sampling: 2 days = 17,280 points
+    // For 2-day equivalent: alpha ≈ 2/(17280+1) ≈ 0.000116
+    // Using 0.0001 for clean 2-day smoothing
+    const alpha = 0.0001;
+    
+    rollingAvgVals = new Array(xVals.length).fill(null);
+    
+    // Initialize with first valid value
+    let ema = null;
+    for (let i = 0; i < xVals.length; i++) {
+      if (yVals[i] != null && Number.isFinite(yVals[i])) {
+        if (ema === null) {
+          // Initialize EMA with first valid value
+          ema = yVals[i];
+        } else {
+          // EMA formula: EMA_t = alpha * value_t + (1 - alpha) * EMA_{t-1}
+          ema = alpha * yVals[i] + (1 - alpha) * ema;
+        }
+        rollingAvgVals[i] = ema;
+      } else if (ema !== null) {
+        // If current value is null but we have an EMA, keep the last EMA
+        rollingAvgVals[i] = ema;
+      }
+    }
+  }
+
+  /**
+   * Calculate the historical average trendline based on avgDailyEnergyUsage.
+   * The trendline starts at the same point as the energy data and follows the average slope.
+   * If a selection range is provided, the trendline starts from the first point in that range.
+   */
+  function calculateAvgTrendline(selectionStartMs = null, selectionEndMs = null) {
+    if (!avgDailyEnergyUsage || xVals.length === 0 || eVals.length === 0) {
+      avgVals = [];
+      return;
+    }
+    
+    // Determine the range to use for the trendline
+    let rangeStartIdx = 0;
+    let rangeEndIdx = xVals.length - 1;
+    
+    if (selectionStartMs !== null && selectionEndMs !== null) {
+      const startSec = Math.floor(selectionStartMs / 1000);
+      const endSec = Math.floor(selectionEndMs / 1000);
+      
+      // Find the first index within the selection
+      while (rangeStartIdx < xVals.length && xVals[rangeStartIdx] < startSec) {
+        rangeStartIdx++;
+      }
+      
+      // Find the last index within the selection
+      while (rangeEndIdx >= 0 && xVals[rangeEndIdx] > endSec) {
+        rangeEndIdx--;
+      }
+    }
+    
+    // Find the first valid energy reading in the range to use as starting point
+    let startEnergy = null;
+    let startIdx = rangeStartIdx;
+    for (let i = rangeStartIdx; i <= rangeEndIdx && i < eVals.length; i++) {
+      if (eVals[i] != null && Number.isFinite(eVals[i])) {
+        startEnergy = eVals[i];
+        startIdx = i;
+        break;
+      }
+    }
+    
+    if (startEnergy === null) {
+      avgVals = [];
+      return;
+    }
+    
+    // Create trendline - fill all points to draw a continuous line
+    // The line is mathematically just two points (start and end), but we need
+    // to fill intermediate values for uPlot to render it
+    const startTimeSec = xVals[startIdx];
+    avgVals = new Array(xVals.length).fill(null);
+    
+    for (let i = startIdx; i < xVals.length; i++) {
+      const durationDays = (xVals[i] - startTimeSec) / 86400; // seconds to days
+      avgVals[i] = startEnergy + (avgDailyEnergyUsage * durationDays);
+    }
+  }
+
   function updateChart() {
     if (!u) {
       initChart();
@@ -391,7 +531,17 @@
     const curMin = curX && Number.isFinite(curX.min) ? curX.min : null;
     const curMax = curX && Number.isFinite(curX.max) ? curX.max : null;
     
-    u.setData([xVals, yVals, eVals]);
+    // Calculate rolling average
+    calculateRollingAvg();
+    
+    // Calculate average trendline based on current selection if available
+    if (selection.start && selection.end) {
+      calculateAvgTrendline(selection.start, selection.end);
+    } else {
+      calculateAvgTrendline();
+    }
+    
+    u.setData([xVals, yVals, rollingAvgVals, eVals, avgVals]);
     
     if (curMin !== null && curMax !== null && curMax > curMin && xVals.length > 0) {
       const latestDataSec = xVals[xVals.length - 1];
@@ -496,11 +646,14 @@
       const newEVals = [];
       
       for (let i = 0; i < mapped.length; i++) {
-        if (mapped[i][1] != null && Number.isFinite(mapped[i][1])) {
+        const energyVal = rows[i].e;
+        // Filter out null/undefined power AND zero/null energy values
+        if (mapped[i][1] != null && Number.isFinite(mapped[i][1]) && 
+            energyVal != null && Number.isFinite(energyVal) && energyVal > 0) {
           validIndices.push(i);
           newXVals.push(Math.floor(mapped[i][0] / 1000));
           newYVals.push(mapped[i][1]);
-          newEVals.push(rows[i].e ?? null);
+          newEVals.push(energyVal);
         }
       }
       
@@ -527,10 +680,9 @@
         }
       } else {
         // Full replacement (initial load or explicit refresh)
-        // Apply downsampling if dataset is large
-        const downsampled = downsampleLTTB(newXVals, newYVals, MAX_CHART_POINTS);
-        xVals = downsampled.xVals;
-        yVals = downsampled.yVals;
+        // No downsampling - use all data points
+        xVals = newXVals;
+        yVals = newYVals;
         eVals = newEVals;
       }
       
@@ -594,7 +746,7 @@
       }
       energyUsed = sumWs / 3600000; // Ws -> kWh
     }
-    statEnergy.textContent = fmt.n(energyUsed, 3);
+    statEnergy.textContent = fmt.n(energyUsed, 2);
     if (statCostRange) {
       const cost = energyUsed != null ? energyUsed * costPerKwh : null;
       statCostRange.textContent = fmt.n(cost, 2);
@@ -603,6 +755,20 @@
     statMax.textContent = fmt.n(maxP, 0);
     statMin.textContent = fmt.n(minP, 0);
     statCount.textContent = String(count);
+    
+    // Calculate average energy consumption based on historical average
+    if (statAvgEnergy && avgDailyEnergyUsage) {
+      const durationDays = (endSec - startSec) / 86400;
+      const avgEnergy = avgDailyEnergyUsage * durationDays;
+      statAvgEnergy.textContent = fmt.n(avgEnergy, 2);
+      if (statAvgCost) {
+        const avgCost = avgEnergy * costPerKwh;
+        statAvgCost.textContent = fmt.n(avgCost, 2);
+      }
+    } else {
+      if (statAvgEnergy) statAvgEnergy.textContent = "–";
+      if (statAvgCost) statAvgCost.textContent = "–";
+    }
   }
 
   function updateHover(idx) {
@@ -610,14 +776,43 @@
       hoverTime.textContent = "";
       hoverTotalEnergy.textContent = "";
       hoverPower.textContent = "";
+      if (hoverAvgTrend) hoverAvgTrend.textContent = "";
+      if (hoverRollingAvg) hoverRollingAvg.textContent = "";
       return;
     }
     const tMs = xVals[idx] * 1000;
     const eNow = eVals[idx];
     const pNow = yVals[idx];
+    const rollingAvgNow = rollingAvgVals[idx];
     hoverTime.textContent = fmt.t(tMs);
-    hoverTotalEnergy.textContent = fmt.n(eNow, 3);
+    hoverTotalEnergy.textContent = fmt.n(eNow, 2);
     hoverPower.textContent = fmt.n(pNow, 0);
+    if (hoverRollingAvg) {
+      hoverRollingAvg.textContent = fmt.n(rollingAvgNow, 0);
+    }
+    if (hoverAvgTrend) {
+      // Calculate interpolated average value for hover
+      if (avgDailyEnergyUsage && eVals.length > 0) {
+        let startEnergy = null;
+        let startTimeSec = null;
+        for (let i = 0; i < eVals.length; i++) {
+          if (eVals[i] != null && Number.isFinite(eVals[i])) {
+            startEnergy = eVals[i];
+            startTimeSec = xVals[i];
+            break;
+          }
+        }
+        if (startEnergy !== null && startTimeSec !== null) {
+          const durationDays = (xVals[idx] - startTimeSec) / 86400;
+          const interpolatedAvg = startEnergy + (avgDailyEnergyUsage * durationDays);
+          hoverAvgTrend.textContent = fmt.n(interpolatedAvg, 2);
+        } else {
+          hoverAvgTrend.textContent = "–";
+        }
+      } else {
+        hoverAvgTrend.textContent = "–";
+      }
+    }
   }
 
   function formatDuration(ms) {
@@ -814,11 +1009,39 @@
 
   btnReset.addEventListener("click", () => {
     if (u && xVals.length) {
+      // Recalculate trendline for full range
+      calculateAvgTrendline();
       u.setScale("x", { min: xVals[0], max: xVals[xVals.length - 1] });
+      u.setData([xVals, yVals, rollingAvgVals, eVals, avgVals]);
     }
     setActiveButton(null); // Clear active state on reset
     clearSelection();
   });
+  
+  const btnToggleScale = document.getElementById("btn-toggle-scale");
+  if (btnToggleScale) {
+    btnToggleScale.addEventListener("click", () => {
+      // Toggle between auto and fixed scale
+      powerScaleMode = powerScaleMode === 'auto' ? 'fixed' : 'auto';
+      
+      // Update button text
+      btnToggleScale.textContent = powerScaleMode === 'auto' ? '📊 Auto Scale' : '📊 Fixed Scale';
+      
+      // Recreate chart with new scale mode
+      if (u) {
+        u.destroy();
+        u = null;
+      }
+      initChart();
+      if (u && xVals.length > 0) {
+        u.setData([xVals, yVals, rollingAvgVals, eVals, avgVals]);
+        // Restore current view if there's a selection
+        if (selection.start && selection.end) {
+          u.setScale("x", { min: selection.start / 1000, max: selection.end / 1000 });
+        }
+      }
+    });
+  }
   if (btnRefresh) {
     btnRefresh.addEventListener("click", async () => {
       if (btnRefresh.disabled) return;
@@ -925,7 +1148,10 @@
   // --------------------------------------------------------------------------
   showLoading();
   initChart();
-  fetchReadings()
+  
+  // Fetch average daily energy usage first, then fetch readings
+  fetchAvgDailyEnergyUsage()
+    .then(() => fetchReadings())
     .then(() => {
       hideLoading();
       loadCostFromStorage();
@@ -970,30 +1196,51 @@ function loadCostFromStorage() {
 
 async function updatePeriodSummaries() {
   const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  // Week starting Sunday
-  const day = now.getDay(); // 0=Sun..6=Sat
-  const startOfWeek = new Date(now);
-  startOfWeek.setHours(0,0,0,0);
-  startOfWeek.setDate(startOfWeek.getDate() - day);
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-  const longTimeAgo = new Date(now.getFullYear() - 100, 0, 1).getTime();
+  const nowMs = now.getTime();
+  
+  // Calculate last 30 days, last 7 days, and last 1 day
+  const last30DaysMs = nowMs - (30 * 24 * 60 * 60 * 1000);
+  const last7DaysMs = nowMs - (7 * 24 * 60 * 60 * 1000);
+  const last1DayMs = nowMs - (1 * 24 * 60 * 60 * 1000);
 
   try {
-    const [dayStats, weekStats, monthStats, latestReading] = await Promise.all([
-      fetchStats(startOfDay, now.getTime()),
-      fetchStats(startOfWeek.getTime(), now.getTime()),
-      fetchStats(startOfMonth, now.getTime()),
+    const [monthStats, weekStats, dayStats, latestReading] = await Promise.all([
+      fetchStats(last30DaysMs, nowMs),
+      fetchStats(last7DaysMs, nowMs),
+      fetchStats(last1DayMs, nowMs),
       fetchLatestReading(),
     ]);
-    if (statDayEnergy) statDayEnergy.textContent = fmt.n(dayStats.energy_used_kwh, 3);
-    if (statDayCost) statDayCost.textContent = fmt.n((dayStats.energy_used_kwh || 0) * costPerKwh, 2);
-    if (statWeekEnergy) statWeekEnergy.textContent = fmt.n(weekStats.energy_used_kwh, 3);
-    if (statWeekCost) statWeekCost.textContent = fmt.n((weekStats.energy_used_kwh || 0) * costPerKwh, 2);
-    if (statMonthEnergy) statMonthEnergy.textContent = fmt.n(monthStats.energy_used_kwh, 3);
+    
+    // Update actual values
+    if (statMonthEnergy) statMonthEnergy.textContent = fmt.n(monthStats.energy_used_kwh, 2);
     if (statMonthCost) statMonthCost.textContent = fmt.n((monthStats.energy_used_kwh || 0) * costPerKwh, 2);
-    if (statCurrentConsumption) statCurrentConsumption.textContent = fmt.n(latestReading.energy_in_kwh, 3);
+    if (statWeekEnergy) statWeekEnergy.textContent = fmt.n(weekStats.energy_used_kwh, 2);
+    if (statWeekCost) statWeekCost.textContent = fmt.n((weekStats.energy_used_kwh || 0) * costPerKwh, 2);
+    if (statDayEnergy) statDayEnergy.textContent = fmt.n(dayStats.energy_used_kwh, 2);
+    if (statDayCost) statDayCost.textContent = fmt.n((dayStats.energy_used_kwh || 0) * costPerKwh, 2);
+    if (statCurrentConsumption) statCurrentConsumption.textContent = fmt.n(latestReading.energy_in_kwh, 2);
     if (statTotalCost) statTotalCost.textContent = fmt.n((latestReading.energy_in_kwh || 0) * costPerKwh, 2);
+    
+    // Update historical averages
+    if (avgDailyEnergyUsage) {
+      const avg30Days = avgDailyEnergyUsage * 30;
+      const avg7Days = avgDailyEnergyUsage * 7;
+      const avg1Day = avgDailyEnergyUsage * 1;
+      
+      if (statMonthAvgEnergy) statMonthAvgEnergy.textContent = fmt.n(avg30Days, 2);
+      if (statMonthAvgCost) statMonthAvgCost.textContent = fmt.n(avg30Days * costPerKwh, 2);
+      if (statWeekAvgEnergy) statWeekAvgEnergy.textContent = fmt.n(avg7Days, 2);
+      if (statWeekAvgCost) statWeekAvgCost.textContent = fmt.n(avg7Days * costPerKwh, 2);
+      if (statDayAvgEnergy) statDayAvgEnergy.textContent = fmt.n(avg1Day, 2);
+      if (statDayAvgCost) statDayAvgCost.textContent = fmt.n(avg1Day * costPerKwh, 2);
+    } else {
+      if (statMonthAvgEnergy) statMonthAvgEnergy.textContent = "–";
+      if (statMonthAvgCost) statMonthAvgCost.textContent = "–";
+      if (statWeekAvgEnergy) statWeekAvgEnergy.textContent = "–";
+      if (statWeekAvgCost) statWeekAvgCost.textContent = "–";
+      if (statDayAvgEnergy) statDayAvgEnergy.textContent = "–";
+      if (statDayAvgCost) statDayAvgCost.textContent = "–";
+    }
     
   } catch (e) {
     console.error("Failed to update period summaries:", e);
@@ -1013,6 +1260,19 @@ async function fetchStats(startMs, endMs) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const body = await res.json();
   return body.stats || {};
+}
+
+async function fetchAvgDailyEnergyUsage() {
+  try {
+    const res = await fetch(`/api/avg_daily_energy_usage`, { cache: "no-cache" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const value = await res.json();
+    avgDailyEnergyUsage = value;
+    console.log(`Loaded average daily energy usage: ${avgDailyEnergyUsage} kWh/day`);
+  } catch (e) {
+    console.error("Failed to fetch average daily energy usage:", e);
+    avgDailyEnergyUsage = null;
+  }
 }
 
 })();
